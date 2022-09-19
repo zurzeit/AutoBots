@@ -154,7 +154,7 @@ class Trainer:
         return ade_losses, fde_losses
 
     def _compute_marginal_errors(self, preds, ego_gt, agents_gt, agents_in):
-        """ calculate the ade and fde including ego and agents"""
+        """ calculate the ade and fde only agents??(by Jasper) what is agents_in??"""
         agent_masks = torch.cat((torch.ones((len(agents_in), 1)).to(self.device), agents_in[:, -1, :, -1]), dim=-1).view(1, 1, len(agents_in), -1)
         agent_masks[agent_masks == 0] = float('nan')
         agents_gt = torch.cat((ego_gt.unsqueeze(2), agents_gt), dim=2).unsqueeze(0).permute(0, 2, 1, 3, 4)
@@ -164,6 +164,7 @@ class Trainer:
         return ade_losses, fde_losses
 
     def _compute_joint_errors(self, preds, ego_gt, agents_gt):
+        """compute ade and fde of all objects?? the only different code is the agents_masks(by Jasper)"""
         agents_gt = torch.cat((ego_gt.unsqueeze(2), agents_gt), dim=2)
         agents_masks = agents_gt[:, :, :, -1]
         agents_masks[agents_masks == 0] = float('nan')
@@ -270,6 +271,7 @@ class Trainer:
             val_ade_losses = np.concatenate(val_ade_losses)
             val_fde_losses = np.concatenate(val_fde_losses)
             val_mode_probs = np.concatenate(val_mode_probs)
+            ## min_xde_K: output the top K xde values(could be ade or fde)
             val_minade_c = min_xde_K(val_ade_losses, val_mode_probs, K=self.args.num_modes)
             val_minade_10 = min_xde_K(val_ade_losses, val_mode_probs, K=min(self.args.num_modes, 10))
             val_minade_5 = min_xde_K(val_ade_losses, val_mode_probs, K=5)
@@ -315,17 +317,17 @@ class Trainer:
 
                 self.optimiser.zero_grad()
                 
-                ## update parameter
-                (nll_loss + adefde_loss + kl_loss).backward()
-                nn.utils.clip_grad_norm_(self.autobot_model.parameters(), self.args.grad_clip_norm)
-                self.optimiser.step()
+                ## update the parameter
+                (nll_loss + adefde_loss + kl_loss).backward() ## calculate the gradient
+                nn.utils.clip_grad_norm_(self.autobot_model.parameters(), self.args.grad_clip_norm)## set threshold to prevent no gradient or huge gradient
+                self.optimiser.step()## update
 
                 self.writer.add_scalar("Loss/nll", nll_loss.item(), steps)
                 self.writer.add_scalar("Loss/adefde", adefde_loss.item(), steps)
                 self.writer.add_scalar("Loss/kl", kl_loss.item(), steps)
 
                 with torch.no_grad():
-                    ade_losses, fde_losses = self._compute_marginal_errors(pred_obs, ego_out, agents_out, agents_in)
+                    ade_losses, fde_losses = self._compute_marginal_errors(pred_obs, ego_out, agents_out, agents_in)## compute losses of all objects
                     epoch_marg_ade_losses.append(ade_losses.reshape(-1, self.args.num_modes))
                     epoch_marg_fde_losses.append(fde_losses.reshape(-1, self.args.num_modes))
                     epoch_marg_mode_probs.append(
@@ -365,11 +367,12 @@ class Trainer:
             self.writer.add_scalar("metrics/Train Scene minFDE {}".format(self.args.num_modes), train_sminfde_c[0], epoch)
 
             self.optimiser_scheduler.step()
-            self.autobotjoint_evaluate(epoch)
-            self.save_model(epoch)
+            self.autobotjoint_evaluate(epoch)## inside the code will save for the best fde or ade
+            self.save_model(epoch)## save every epoch
             print("Best Scene minADE c", self.smallest_minade_k, "Best Scene minFDE c", self.smallest_minfde_k)
 
     def autobotjoint_evaluate(self, epoch):
+        """evaluate the val data and save model if it is the best"""
         self.autobot_model.eval()
         with torch.no_grad():
             val_marg_ade_losses = []
@@ -422,6 +425,7 @@ class Trainer:
             self.save_model(minade_k=val_sminade_c[0], minfde_k=val_sminfde_c[0])
 
     def save_model(self, epoch=None, minade_k=None, minfde_k=None):
+        """compare with the smallest_minade and smallest_minfde and save if conditioned is met.(by Jasper)"""
         if epoch is None:
             if minade_k < self.smallest_minade_k:
                 self.smallest_minade_k = minade_k
