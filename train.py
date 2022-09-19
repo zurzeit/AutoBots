@@ -154,6 +154,7 @@ class Trainer:
         return ade_losses, fde_losses
 
     def _compute_marginal_errors(self, preds, ego_gt, agents_gt, agents_in):
+        """ calculate the ade and fde including ego and agents"""
         agent_masks = torch.cat((torch.ones((len(agents_in), 1)).to(self.device), agents_in[:, -1, :, -1]), dim=-1).view(1, 1, len(agents_in), -1)
         agent_masks[agent_masks == 0] = float('nan')
         agents_gt = torch.cat((ego_gt.unsqueeze(2), agents_gt), dim=2).unsqueeze(0).permute(0, 2, 1, 3, 4)
