@@ -33,9 +33,9 @@ class Trainer:
             torch.cuda.manual_seed(self.args.seed)
         else:
             self.device = torch.device("cpu")
-
-        self.initialize_dataloaders()
-        self.initialize_model()
+        
+        self.initialize_dataloaders() ## create data (by Jasper)
+        self.initialize_model() ## set model(self.autobot_model) (by Jasper)
         self.optimiser = optim.Adam(self.autobot_model.parameters(), lr=self.args.learning_rate,
                                     eps=self.args.adam_epsilon)
         self.optimiser_scheduler = MultiStepLR(self.optimiser, milestones=args.learning_rate_sched, gamma=0.5,
@@ -46,6 +46,7 @@ class Trainer:
         self.smallest_minfde_k = 5.0  # for computing best models
 
     def initialize_dataloaders(self):
+        """ create data """
         if "Nuscenes" in self.args.dataset:
             train_dset = NuscenesH5Dataset(dset_path=self.args.dataset_path, split_name="train",
                                            model_type=self.args.model_type, use_map_img=self.args.use_map_image,
@@ -92,6 +93,7 @@ class Trainer:
         print("Val dataset loaded with length", len(val_dset))
 
     def initialize_model(self):
+        """ choose model for self.autobot_model: class AutoBotJoint """
         if "Ego" in self.args.model_type:
             self.autobot_model = AutoBotEgo(k_attr=self.k_attr,
                                             d_k=self.args.hidden_size,
@@ -126,6 +128,7 @@ class Trainer:
             raise NotImplementedError
 
     def _data_to_device(self, data):
+        """ to device (by Jasper)"""
         if "Joint" in self.args.model_type:
             ego_in, ego_out, agents_in, agents_out, context_img, agent_types = data
             ego_in = ego_in.float().to(self.device)
@@ -296,10 +299,11 @@ class Trainer:
             epoch_scene_ade_losses = []
             epoch_scene_fde_losses = []
             epoch_mode_probs = []
-            for i, data in enumerate(self.train_loader):
-                ego_in, ego_out, agents_in, agents_out, map_lanes, agent_types = self._data_to_device(data)
-                pred_obs, mode_probs = self.autobot_model(ego_in, agents_in, map_lanes, agent_types)
-
+            for i, data in enumerate(self.train_loader): ## self.train_loader: dataloader of the given data(e.g. nuScenes) (by Jasper)
+                ego_in, ego_out, agents_in, agents_out, map_lanes, agent_types = self._data_to_device(data) ## to device(by Jasper)
+                pred_obs, mode_probs = self.autobot_model(ego_in, agents_in, map_lanes, agent_types) ## forward of the model (by Jasper)
+                
+                ## compute loss
                 nll_loss, kl_loss, post_entropy, adefde_loss = \
                     nll_loss_multimodes_joint(pred_obs, ego_out, agents_out, mode_probs,
                                               entropy_weight=self.args.entropy_weight,
@@ -309,6 +313,8 @@ class Trainer:
                                               predict_yaw=self.predict_yaw)
 
                 self.optimiser.zero_grad()
+                
+                ## update parameter
                 (nll_loss + adefde_loss + kl_loss).backward()
                 nn.utils.clip_grad_norm_(self.autobot_model.parameters(), self.args.grad_clip_norm)
                 self.optimiser.step()
