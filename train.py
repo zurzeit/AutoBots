@@ -42,7 +42,7 @@ class Trainer:
                                                verbose=True)
 
         self.writer = SummaryWriter(log_dir=os.path.join(self.results_dirname, "tb_files"))
-        self.smallest_minade_k = 5.0  # for computing best models
+        self.smallest_minade_k = 5.0  # for computing best models  (will be the comparison variable in the save_model() by Jasper)
         self.smallest_minfde_k = 5.0  # for computing best models
 
     def initialize_dataloaders(self):

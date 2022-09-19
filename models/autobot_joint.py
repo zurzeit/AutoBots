@@ -40,15 +40,19 @@ class OutputModel(nn.Module):
     This class operates on the output of AutoBot-Joint's decoder representation. It produces the parameters of a
     bivariate Gaussian distribution and possibly predicts the yaw.
     '''
+    """
+    predict [x_mean, y_mean, x_sigma, y_sigma, rho, yaws] from 3 layers of linear
+    """
     def __init__(self, d_k=64, predict_yaw=False):
         super(OutputModel, self).__init__()
         self.d_k = d_k
         self.predict_yaw = predict_yaw
-        out_len = 5
+        out_len = 5 ## [x_mean, y_mean, x_sigma, y_sigma, rho]
         if predict_yaw:
-            out_len = 6
+            out_len = 6 ## [x_mean, y_mean, x_sigma, y_sigma, rho, yaws]
 
         init_ = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0), np.sqrt(2))
+        ## 3 layers of linear
         self.observation_model = nn.Sequential(
             init_(nn.Linear(self.d_k, self.d_k)), nn.ReLU(),
             init_(nn.Linear(self.d_k, self.d_k)), nn.ReLU(),
@@ -57,14 +61,18 @@ class OutputModel(nn.Module):
         self.min_stdev = 0.01
 
     def forward(self, agent_latent_state):
+        """agent_latent_state:[T,BK,dk]?? (by Jasper)"""
         T = agent_latent_state.shape[0]
         BK = agent_latent_state.shape[1]
+
+        ## send to 3 layers of linear
         pred_obs = self.observation_model(agent_latent_state.reshape(-1, self.d_k)).reshape(T, BK, -1)
+        ## ideally pred_obs:[x_mean,y_mean,x_sigma,y_sigma,rho] (by Jasper)
         x_mean = pred_obs[:, :, 0]
         y_mean = pred_obs[:, :, 1]
         x_sigma = F.softplus(pred_obs[:, :, 2]) + self.min_stdev
         y_sigma = F.softplus(pred_obs[:, :, 3]) + self.min_stdev
-        rho = torch.tanh(pred_obs[:, :, 4]) * 0.9  # for stability
+        rho = torch.tanh(pred_obs[:, :, 4]) * 0.9  # for stability   (How?? by Jasper)
         if self.predict_yaw:
             yaws = pred_obs[:, :, 5]  # for stability
             return torch.stack([x_mean, y_mean, x_sigma, y_sigma, rho, yaws], dim=2)
@@ -80,6 +88,7 @@ class AutoBotJoint(nn.Module):
                  tx_hidden_size=384, use_map_lanes=False, num_agent_types=None, predict_yaw=False):
         super(AutoBotJoint, self).__init__()
 
+        ## some kind of parameter initialization(by Jasper)
         init_ = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0), np.sqrt(2))
 
         self.k_attr = k_attr
@@ -88,38 +97,42 @@ class AutoBotJoint(nn.Module):
         self._M = _M  # num agents other then the main agent.
         self.c = c
         self.T = T
-        self.L_enc = L_enc
+        self.L_enc = L_enc # num_layers inside the encoder??(by Jasper)
         self.dropout = dropout
-        self.num_heads = num_heads
-        self.L_dec = L_dec
-        self.tx_hidden_size = tx_hidden_size
+        self.num_heads = num_heads## num heads in the multi-head attention module??(by Jasper)
+        self.L_dec = L_dec ## num of layers inside the decoder??(by Jasper)
+        self.tx_hidden_size = tx_hidden_size## context??(by Jasper)
         self.use_map_lanes = use_map_lanes
         self.predict_yaw = predict_yaw
 
         # INPUT ENCODERS
-        self.agents_dynamic_encoder = nn.Sequential(init_(nn.Linear(self.k_attr, self.d_k)))
-
+        self.agents_dynamic_encoder = nn.Sequential(init_(nn.Linear(self.k_attr, self.d_k)))# Fc-layer just like transformer(by Jasper)
+            ## to model the agent dynamic
         # ============================== AutoBot-Joint ENCODER ==============================
         self.social_attn_layers = []
         self.temporal_attn_layers = []
         for _ in range(self.L_enc):
+            ## Time Encoding(for each agent, do the attention(transformer) of vectors from each timestep ) (by Jasper)
             tx_encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_k, nhead=self.num_heads,
                                                           dropout=self.dropout, dim_feedforward=self.tx_hidden_size)
             self.temporal_attn_layers.append(nn.TransformerEncoder(tx_encoder_layer, num_layers=2))
 
+            ## Social Encoding(for each timestep, do the attention(transformer) of vectors from each agent )(by Jasper)
             tx_encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_k, nhead=self.num_heads,
                                                           dropout=self.dropout, dim_feedforward=self.tx_hidden_size)
             self.social_attn_layers.append(nn.TransformerEncoder(tx_encoder_layer, num_layers=1))
 
-        self.temporal_attn_layers = nn.ModuleList(self.temporal_attn_layers)
-        self.social_attn_layers = nn.ModuleList(self.social_attn_layers)
+        self.temporal_attn_layers = nn.ModuleList(self.temporal_attn_layers) ## should be a L element List(by Jasper)
+        self.social_attn_layers = nn.ModuleList(self.social_attn_layers) ## should be a L element List(by Jasper)
 
         # ============================== MAP ENCODER ==========================
+        # Pass(by Jasper) need to comeback
         if self.use_map_lanes:
             self.map_encoder = MapEncoderPtsMA(d_k=self.d_k, map_attr=self.map_attr, dropout=self.dropout)
             self.map_attn_layers = nn.MultiheadAttention(self.d_k, num_heads=self.num_heads, dropout=self.dropout)
 
         # ============================== AGENT TYPES Encoders ==============================
+        ## don't know what is this about??(by Jasper)
         self.emb_agent_types = nn.Sequential(init_(nn.Linear(num_agent_types, self.d_k)))
         self.dec_agenttypes_encoder = nn.Sequential(
             init_(nn.Linear(2 * self.d_k, self.d_k)), nn.ReLU(),
@@ -127,27 +140,31 @@ class AutoBotJoint(nn.Module):
         )
 
         # ============================== AutoBot-Joint DECODER ==============================
-        self.Q = nn.Parameter(torch.Tensor(self.T, 1, self.c, 1, self.d_k), requires_grad=True)
+        ## important!!!(by Jasper)
+        self.Q = nn.Parameter(torch.Tensor(self.T, 1, self.c, 1, self.d_k), requires_grad=True)## shape:(self.T, 1, self.c, 1, self.d_k)(by Jasper)
         nn.init.xavier_uniform_(self.Q)
 
         self.social_attn_decoder_layers = []
         self.temporal_attn_decoder_layers = []
         for _ in range(self.L_dec):
+            ## Time encoding
             tx_decoder_layer = nn.TransformerDecoderLayer(d_model=self.d_k, nhead=self.num_heads,
                                                           dropout=self.dropout, dim_feedforward=self.tx_hidden_size)
             self.temporal_attn_decoder_layers.append(nn.TransformerDecoder(tx_decoder_layer, num_layers=2))
+            ## Social encoding
             tx_encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_k, nhead=self.num_heads,
                                                           dropout=self.dropout, dim_feedforward=self.tx_hidden_size)
             self.social_attn_decoder_layers.append(nn.TransformerEncoder(tx_encoder_layer, num_layers=1))
 
-        self.temporal_attn_decoder_layers = nn.ModuleList(self.temporal_attn_decoder_layers)
-        self.social_attn_decoder_layers = nn.ModuleList(self.social_attn_decoder_layers)
+        self.temporal_attn_decoder_layers = nn.ModuleList(self.temporal_attn_decoder_layers)## should be L_dec elements
+        self.social_attn_decoder_layers = nn.ModuleList(self.social_attn_decoder_layers)## should be L_dec elements
 
         # ============================== Positional encoder ==============================
         self.pos_encoder = PositionalEncoding(self.d_k, dropout=0.0)
 
         # ============================== OUTPUT MODEL ==============================
         self.output_model = OutputModel(d_k=self.d_k, predict_yaw=self.predict_yaw)
+            ## turn agent latent feature into [x_mean, y_mean, x_sigma, y_sigma, rho, yaws]
 
         # ============================== Mode Prob prediction (P(z|X_1:t)) ==============================
         self.P = nn.Parameter(torch.Tensor(c, 1, 1, d_k), requires_grad=True)  # Appendix C.2.
@@ -156,7 +173,7 @@ class AutoBotJoint(nn.Module):
         if self.use_map_lanes:
             self.mode_map_attn = nn.MultiheadAttention(self.d_k, num_heads=self.num_heads, dropout=self.dropout)
 
-        self.prob_decoder = nn.MultiheadAttention(self.d_k, num_heads=self.num_heads, dropout=self.dropout)
+        self.prob_decoder = nn.MultiheadAttention(self.d_k, num_heads=self.num_heads, dropout=self.dropout)## don't know yet
         self.prob_predictor = init_(nn.Linear(self.d_k, 1))
 
         self.train()
@@ -295,9 +312,14 @@ class AutoBotJoint(nn.Module):
             agents_dec_emb = self.temporal_attn_decoder_fn(agents_dec_emb, context, opps_masks_modes, layer=self.temporal_attn_decoder_layers[d])
             agents_dec_emb = self.social_attn_decoder_fn(agents_dec_emb, opps_masks_modes, layer=self.social_attn_decoder_layers[d])
 
+        ## output distribution(by Jasper)
         out_dists = self.output_model(agents_dec_emb.reshape(self.T, -1, self.d_k))
         out_dists = out_dists.reshape(self.T, B, self.c, self._M+1, -1).permute(2, 0, 1, 3, 4)
+        
 
+        # ======================================(Jasper split line)=================================
+        # I think above(including self.Q) is about the position prediction. Below is about the mode probability prediction.(by Jasper)
+        
         # Mode prediction
         mode_params_emb = self.P.repeat(1, B, self._M+1, 1).view(self.c, -1, self.d_k)
         mode_params_emb = self.prob_decoder(query=mode_params_emb, key=agents_emb.reshape(-1, B*(self._M+1), self.d_k),
@@ -307,7 +329,9 @@ class AutoBotJoint(nn.Module):
             orig_road_segs_masks = orig_road_segs_masks.view(B*(self._M+1), -1)
             mode_params_emb = self.mode_map_attn(query=mode_params_emb, key=orig_map_features, value=orig_map_features,
                                                  key_padding_mask=orig_road_segs_masks)[0] + mode_params_emb
-
+        
+        ## should be output the probability of this mode
+        ## just a linear, output a scalar
         mode_probs = self.prob_predictor(mode_params_emb).squeeze(-1).view(self.c, B, self._M+1).sum(2).transpose(0, 1)
         mode_probs = F.softmax(mode_probs, dim=1)
 
