@@ -42,7 +42,7 @@ def nll_pytorch_dist(pred, data, rtn_loss=True):
 
 
 def nll_loss_multimodes(pred, data, modes_pred, entropy_weight=1.0, kl_weight=1.0, use_FDEADE_aux_loss=True):
-    """NLL loss multimodes for training. MFP Loss function
+    """(negative log likelihood)NLL loss multimodes for training. MFP Loss function
     Args:
       pred: [K, T, B, 5]
       data: [B, T, 5]
@@ -139,8 +139,12 @@ def nll_pytorch_dist_joint(pred, data, agents_masks):
 def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_weight=1.0, kl_weight=1.0,
                               use_FDEADE_aux_loss=True, agent_types=None, predict_yaw=False):
     """
+    # c: c times of learnable seed parameters (by Jasper)
+    # M: number of agents in the scene (by Jasper)
+    # T: output sequence length (by Jasper)
+    
     Args:
-      pred: [c, T, B, M, 5]
+      pred: [c, T, B, M, 5] 
       ego_data: [B, T, 5]
       agents_data: [B, T, M, 5]
       mode_probs: [B, c], prior prob over modes
