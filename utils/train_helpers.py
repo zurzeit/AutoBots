@@ -174,14 +174,14 @@ def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_w
         nll_k = nll_pytorch_dist_joint(pred[kk].transpose(0, 1), gt_agents[:, :, :, :2], agents_masks) * post_pr[:, kk]
         loss += nll_k.mean()
 
-    # Adding entropy loss term to ensure that individual predictions do not try to cover multiple modes.
+    # Adding entropy loss term to ensure that individual predictions do not try to cover multiple modes.(?? by Jasper)
     entropy_vals = []
     for kk in range(modes):
         entropy_vals.append(get_BVG_distributions_joint(pred[kk]).entropy())
     entropy_loss = torch.mean(torch.stack(entropy_vals).permute(2, 0, 3, 1).sum(3).mean(2).max(1)[0])
     loss += entropy_weight * entropy_loss
 
-    # KL divergence between the prior and the posterior distributions.
+    # KL divergence between the prior and the posterior distributions.(D_KL terms in the paper. by Jasper)
     kl_loss_fn = torch.nn.KLDivLoss(reduction='batchmean')  # type: ignore
     kl_loss = kl_weight*kl_loss_fn(torch.log(mode_probs), post_pr)
 
