@@ -180,36 +180,74 @@ class AutoBotJoint(nn.Module):
 
     def generate_decoder_mask(self, seq_len, device):
         ''' For masking out the subsequent info. '''
+        '''
+        return like
+            tensor([[False,  True,  True,  True,  True],
+                    [False, False,  True,  True,  True],
+                    [False, False, False,  True,  True],
+                    [False, False, False, False,  True],
+                    [False, False, False, False, False]])
+        '''
         subsequent_mask = (torch.triu(torch.ones((seq_len, seq_len), device=device), diagonal=1)).bool()
         return subsequent_mask
 
     def process_observations(self, ego, agents):
+        """
+            ego: shape [B, T_obs, k_attr+1] with last values being the existence mask.
+            agents: shape [B, T_obs, M-1, k_attr+1] with last values being the existence mask.
+        
+        output(by Jasper)
+            ego_tensor: shape [B, T_obs, k_attr], remove the mask attribute from the ego.(by Jasper)
+            opps_tensor: shape [B, T_obs, M-1, k_attr], remove the mask attribute from the agents.(by Jasper)
+            opps_mask: shape [B, T_obs, M] only agent will be true.(by Jasper)
+            env_masks: shape: [B, T_obs]. only ego will be shown.(by Jasper)
+
+
+        """
         # ego stuff
         ego_tensor = ego[:, :, :self.k_attr]
-        env_masks = ego[:, :, -1]
+        env_masks = ego[:, :, -1]# shape: [B, T_obs]
 
         # Agents stuff
-        temp_masks = torch.cat((torch.ones_like(env_masks.unsqueeze(-1)), agents[:, :, :, -1]), dim=-1)
+
+        temp_masks = torch.cat((torch.ones_like(env_masks.unsqueeze(-1)), agents[:, :, :, -1]), dim=-1)#[B, T_obs,1] cat [B, T_obs, M-1]-> [B, T_obs, M]
+            ## combine the ego mask and the agent mask?? (by Jasper)
         opps_masks = (1.0 - temp_masks).type(torch.BoolTensor).to(agents.device)  # only for agents.
         opps_tensor = agents[:, :, :, :self.k_attr]  # only opponent states
 
         return ego_tensor, opps_tensor, opps_masks, env_masks
 
     def temporal_attn_fn(self, agents_emb, agent_masks, layer):
+        """
+        Aside from the layer we already established in the __init__, in this function, we try to adjust the tensor dimension into a proper shape to 
+        put into the layer.(by Jasper)
+        """
+
         '''
         :param agents_emb: (T, B, N, H)
         :param agent_masks: (B, T, N)
         :return: (T, B, N, H)
+
+            N: maybe is number of agents(by Jasper)
+            H: maybe is the encoding feature length(by Jasper)
+            layer: can be self.temporal_attn_layers[i]  -> ith transformerEncoder layer(by Jasper)
         '''
         T_obs = agents_emb.size(0)
         B = agent_masks.size(0)
-        agent_masks = agent_masks.permute(0, 2, 1).reshape(-1, T_obs)
+        ## for the Time Encoding,(because batch_first=False) we try to move the sequence_len dimension to the first dimension. That is T in this case.
+        ## Hence, no need to adjust the agents_emb dimension order.(by Jasper)
+        agent_masks = agent_masks.permute(0, 2, 1).reshape(-1, T_obs) 
         agent_masks[:, -1][agent_masks.sum(-1) == T_obs] = False  # Ensure agent's that don't exist don't throw NaNs.
         agents_temp_emb = layer(self.pos_encoder(agents_emb.reshape(T_obs, B * (self._M + 1), -1)),
                                 src_key_padding_mask=agent_masks)
         return agents_temp_emb.view(T_obs, B, self._M+1, -1)
 
     def social_attn_fn(self, agents_emb, agent_masks, layer):
+        """
+        Aside from the layer we already established in the __init__, in this function, we try to adjust the tensor dimension into a proper shape to 
+        put into the layer.(by Jasper)
+        """
+
         '''
         :param agents_emb: (T, B, N, H)
         :param agent_masks: (B, T, N)
@@ -217,7 +255,9 @@ class AutoBotJoint(nn.Module):
         '''
         T_obs = agents_emb.size(0)
         B = agent_masks.size(0)
-        agents_emb = agents_emb.permute(2, 1, 0, 3).reshape(self._M + 1, B * T_obs, -1)
+        ## for the Social Encoding,(because batch_first=False) we try to move the sequence_len dimension to the first dimension. That is N in this case.
+        ## Hence, we need to adjust the agents_emb dimension order.(by Jasper)
+        agents_emb = agents_emb.permute(2, 1, 0, 3).reshape(self._M + 1, B * T_obs, -1) # try to switch the time dimension to the last dimension
         agents_soc_emb = layer(agents_emb, src_key_padding_mask=agent_masks.view(-1, self._M+1))
         agents_soc_emb = agents_soc_emb.view(self._M+1, B, T_obs, -1).permute(2, 1, 0, 3)
         return agents_soc_emb
@@ -229,13 +269,19 @@ class AutoBotJoint(nn.Module):
         :param agent_masks: (BK, T, N)
         :return: (T, BK, N, H)
         '''
+        '''
+        BK: means B*k
+        '''
         T_obs = context.size(0)
         BK = agent_masks.size(0)
+
+        ## important!!! (by Jasper)
         time_masks = self.generate_decoder_mask(seq_len=self.T, device=agents_emb.device)
-        agent_masks = agent_masks.permute(0, 2, 1).reshape(-1, T_obs)
-        agent_masks[:, -1][agent_masks.sum(-1) == T_obs] = False  # Ensure that agent's that don't exist don't make NaN.
-        agents_emb = agents_emb.reshape(self.T, -1, self.d_k)  # [T, BxKxN, H]
-        context = context.view(-1, BK*(self._M+1), self.d_k)
+
+        agent_masks = agent_masks.permute(0, 2, 1).reshape(-1, T_obs)# (BKN, T)
+        agent_masks[:, -1][agent_masks.sum(-1) == T_obs] = False  # Ensure that agent's that don't exist don't make NaN. (don't understand by Jasper)
+        agents_emb = agents_emb.reshape(self.T, -1, self.d_k)  # [T, BxKxN, self.d_k]
+        context = context.view(-1, BK*(self._M+1), self.d_k) # [self.T, BK*(self._M+1), self.d_k]
 
         agents_temp_emb = layer(agents_emb, context, tgt_mask=time_masks, memory_key_padding_mask=agent_masks)
         agents_temp_emb = agents_temp_emb.view(self.T, BK, self._M+1, -1)
@@ -276,9 +322,9 @@ class AutoBotJoint(nn.Module):
 
         # Process through AutoBot's encoder
         for i in range(self.L_enc):
-            agents_emb = self.temporal_attn_fn(agents_emb, opps_masks, layer=self.temporal_attn_layers[i])
-            agents_emb = self.social_attn_fn(agents_emb, opps_masks, layer=self.social_attn_layers[i])
-
+            agents_emb = self.temporal_attn_fn(agents_emb, opps_masks, layer=self.temporal_attn_layers[i]) ## adjust the feature shape and put into the layer(Jasper)
+            agents_emb = self.social_attn_fn(agents_emb, opps_masks, layer=self.social_attn_layers[i]) ## adjust the feature shape and put into the layer(Jasper)
+            # agents_emb: (T, B, N, H) H: should be the feature_len, N: should be the number of agent (by Jasper)
         # Process map information
         if self.use_map_lanes:
             orig_map_features, orig_road_segs_masks = self.map_encoder(roads, agents_emb)
@@ -287,21 +333,29 @@ class AutoBotJoint(nn.Module):
 
         # Repeat the tensors for the number of modes.
         opps_masks_modes = opps_masks.unsqueeze(1).repeat(1, self.c, 1, 1).view(B*self.c, ego_in.shape[1], -1)
-        context = agents_emb.unsqueeze(2).repeat(1, 1, self.c, 1, 1)
-        context = context.view(ego_in.shape[1], B*self.c, self._M+1, self.d_k)
+        context = agents_emb.unsqueeze(2).repeat(1, 1, self.c, 1, 1) #(T, B, self.c, N, H)
+        context = context.view(ego_in.shape[1], B*self.c, self._M+1, self.d_k) #(T, B*self.c, N, H)
 
+
+        ### combine Q and agent type to encode agents_dec_emb
         # embed agent types
         agent_types_features = self.emb_agent_types(agent_types).unsqueeze(1).\
             repeat(1, self.c, 1, 1).view(-1, self._M+1, self.d_k)
+            # agent_types_feature: [B*self.c, M, self.d_k]
         agent_types_features = agent_types_features.unsqueeze(0).repeat(self.T, 1, 1, 1)
-
+            # agent_types_feature: [self.T, B*self.c, M, self.d_k]
         # AutoBot-Joint Decoding
         dec_parameters = self.Q.repeat(1, B, 1, self._M+1, 1).view(self.T, B*self.c, self._M+1, -1)
+            # shape: [self.T, B*self.c, self._M+1, self.d_k]
         dec_parameters = torch.cat((dec_parameters, agent_types_features), dim=-1)
+            # shape: [self.T, B*self.c, self._M+1, self.d_k + self.d_k]
         dec_parameters = self.dec_agenttypes_encoder(dec_parameters)
+            # shape: [self.T, B*self.c, self._M+1, self.d_k]
         agents_dec_emb = dec_parameters
-
+            # shape: [self.T, B*self.c, self._M+1, self.d_k]
+        
         for d in range(self.L_dec):
+            ## combine map feature into agents_dec_emb_map(by Jasper)
             if self.use_map_lanes and d == 1:
                 agents_dec_emb = agents_dec_emb.reshape(self.T, -1, self.d_k)
                 agents_dec_emb_map = self.map_attn_layers(query=agents_dec_emb, key=map_features, value=map_features,
