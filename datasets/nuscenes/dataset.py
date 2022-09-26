@@ -52,7 +52,14 @@ class NuscenesH5Dataset(Dataset):
         self.num_agent_types = len(self.unique_agent_types)
 
     def get_input_output_seqs(self, ego_data, agents_data):
-        traj_len = int(np.sum(ego_data[:, 2]))
+        '''
+            ego_in: [4, 3]
+            ego_out: [the last pred_horizon of ego,3] (12,3)
+            agents_in: [4, num_others, 3]
+            agents_out: [the last pred_horizon of ego, num_others, 3]
+
+        '''
+        traj_len = int(np.sum(ego_data[:, 2])) # the ego time interval. smaller then 18 (past_t+fut_t)
 
         # Ego
         temp_ego_in = ego_data[:traj_len - self.pred_horizon]  # at most shape(6, 3)
@@ -245,16 +252,26 @@ class NuscenesH5Dataset(Dataset):
         return new_ego_in, new_ego_out, new_agents_in, new_agents_out, new_roads
 
     def __getitem__(self, idx: int):
+        '''
+        output
+            in_ego: [4(input length for challenge), 3]
+            out_ego: [the last pred_horizon of ego,3] (12,3)
+            in_agents: [4, num_others, 3]
+            out_agents: [the last pred_horizon of ego, num_others, 3] (12,3)
+        '''
         dataset = h5py.File(os.path.join(self.data_root, self.split_name + '_dataset.hdf5'), 'r')
 
-        ego_data = dataset['ego_trajectories'][idx]
-        agents_data = dataset['agents_trajectories'][idx]
+        ego_data = dataset['ego_trajectories'][idx]# ego_array: [(p_t+f_t), 3]
+        agents_data = dataset['agents_trajectories'][idx]# [fut_t+past_t, num_others, 3]
 
         agent_types = self.get_agent_types(dataset['agents_types'][idx], num_raw_agents=agents_data.shape[1])
         agents_data, agent_types = self.select_valid_others(agents_data, agent_types)
 
         in_ego, out_ego, in_agents, out_agents = self.get_input_output_seqs(ego_data, agents_data)
-
+            # in_ego: [4, 3]
+            # out_ego: [the last pred_horizon of ego,3] (12,3)
+            # in_agents: [4, num_others, 3]
+            # out_agents: [the last pred_horizon of ego, num_others, 3] (12,3)
         if self.use_map_img:
             # original image is 75m behind, 75m in front, 75m left, 75m right @ 0.2m/px resolution.
             # below recovers an image with 0m behind, 75m in front, 30m left, 30m right

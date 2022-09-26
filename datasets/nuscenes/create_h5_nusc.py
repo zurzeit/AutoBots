@@ -45,6 +45,10 @@ if __name__ == '__main__':
     road_imgs = f.create_dataset("large_roads", shape=(num_scenes, 750, 750, 3), chunks=(1, 750, 750, 3), dtype=np.uint8)
 
     for i, data in enumerate(nuscenes):
+        # the data here is the tuple return from the __getitem__ from raw_dataset.py
+        # data: tuple, len=6 
+        #   [ego_array, agents_array.transpose((1, 0, 2)), road_img, extras, agent_types, rotated_map]
+        #       extras: [instance_token, sample_token, annotation['translation'], annotation['rotation'], map_name]
         if i % 10 == 0:
             print(i, "/", num_scenes)
         ego_trajectories[i] = data[0]
