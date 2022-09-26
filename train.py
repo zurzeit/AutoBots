@@ -302,6 +302,11 @@ class Trainer:
             epoch_mode_probs = []
             for i, data in enumerate(self.train_loader): ## self.train_loader: dataloader of the given data(e.g. nuScenes) (by Jasper)
                 ego_in, ego_out, agents_in, agents_out, map_lanes, agent_types = self._data_to_device(data) ## to device(by Jasper)
+                # ego_in: torch.Size([batch, 4, 5])
+                # ego_out: torch.Size([batch, 12, 5])
+                # agents_in: torch.Size([batch, 4, 7, 5])
+                # agents_out: torch.Size([batch, 12, 7, 5])
+                # map_lanes: torch.Size([batch, 8, 100, 40, 4]
                 pred_obs, mode_probs = self.autobot_model(ego_in, agents_in, map_lanes, agent_types) ## forward of the model (by Jasper)
                 
                 ## compute loss

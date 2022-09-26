@@ -204,6 +204,15 @@ class NuScenesDataset(Dataset):
         return sample_info
 
     def choose_agents(self, past_samples, future_samples, sample_token):
+        '''pick the top num_others closest object as the agents
+            The agent array only contains those agents' information.
+            The mask will be 1 for those meaningful agents-timestamp info. 
+            Because not all agents appear in the scene for past_t+fut_t time, there will be some
+            0 store in the agents_array[agents, past_t+fut_t, 3](by Jasper)
+            output:
+                agents_array: [num_others, fut_t+past_t, 3]
+                agents_types_list: list, len=num_others
+        '''
         # Rectangle around ego at the prediction time
         x_left, x_right = -self.ego_range[0], self.ego_range[1]  # in meters
         y_behind, y_infront = -self.ego_range[2], self.ego_range[3]  # in meters
@@ -246,6 +255,22 @@ class NuScenesDataset(Dataset):
         return agents_array, agents_types_list
 
     def __getitem__(self, idx: int):
+        ''' 
+
+        Because this is a transformer-based model, the input tensor format is different from what we know.
+        We want to produce somekind of timestamp-centered tensor. It means we need past tensor, future tensor 
+        all combine in one item[idx]. Hence, each item[idx] is not an agent's whole traj info
+         but "trajectory among a sliding window of the agent". As a result, the item[next_idx] will be a timestamp-shift
+         tensor of the item[idx].
+
+        The past frames is 6. The future frames is 12. The total size of tensor of one agent will be (18,2).
+        
+        output:
+            ego_array: [(p_sec+f_sec), 3(x,y,mask)], the ego tensor after rotation. All ego mask is 1.
+            agents_array: [fut_t+past_t, num_others, 3], 3:(x,y,mask)
+            agents_types: list, len=num_others, with ego_type as the first element.
+            extras: [instance_token, sample_token, annotation['translation'], annotation['rotation'], map_name]
+        '''
         instance_token, sample_token = self._dataset[idx].split("_")
         annotation = self._helper.get_sample_annotation(instance_token, sample_token)
         ego_type = [annotation['category_name']]
@@ -282,13 +307,16 @@ class NuScenesDataset(Dataset):
         p_sample_info = self._helper.get_past_for_sample(
             sample_token, seconds=self.past_secs, in_agent_frame=False, just_xy=True
         )
+            # p_sample_info: class < dict >, keys are the instance in the scene
+            # If just_xy== True, the mapping is from instance token to np.ndarray
+            # Else, the mapping is from instance token to list of records
         f_sample_info = self._helper.get_future_for_sample(
             sample_token, seconds=self.future_secs, in_agent_frame=False, just_xy=True
         )
         p_sample_info = self._rotate_sample_points(annotation, p_sample_info)
         f_sample_info = self._rotate_sample_points(annotation, f_sample_info)
         agents_array, agent_types = self.choose_agents(p_sample_info, f_sample_info, sample_token)
-        agent_types = ego_type + agent_types
+        agent_types = ego_type + agent_types # list concatenation
 
         # Map stuff
         map_name = self._helper.get_map_name_from_sample_token(sample_token)
