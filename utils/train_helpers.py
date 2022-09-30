@@ -130,6 +130,10 @@ def get_Laplace_dist_joint(pred):
 
 def nll_pytorch_dist_joint(pred, data, agents_masks):
     # biv_gauss_dist = get_BVG_distributions_joint(pred)
+    '''
+        pred: [B, T, num_others, 5]
+        data: [B, T, num_others, 2] (gt)
+    '''
     biv_gauss_dist = get_Laplace_dist_joint(pred)
     num_active_agents_per_timestep = agents_masks.sum(2)
     loss = (((-biv_gauss_dist.log_prob(data).sum(-1) * agents_masks).sum(2)) / num_active_agents_per_timestep).sum(1)
@@ -157,7 +161,7 @@ def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_w
     # compute posterior probability based on predicted prior and likelihood of predicted scene.
     log_lik = np.zeros((batch_sz, modes))
     with torch.no_grad():
-        for kk in range(modes):
+        for kk in range(modes):# calculate all modes of nll
             nll = nll_pytorch_dist_joint(pred[kk].transpose(0, 1), gt_agents[:, :, :, :2], agents_masks)
             log_lik[:, kk] = -nll.cpu().numpy()
 

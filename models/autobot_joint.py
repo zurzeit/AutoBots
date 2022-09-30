@@ -150,7 +150,7 @@ class AutoBotJoint(nn.Module):
         self.output_model = OutputModel(d_k=self.d_k, predict_yaw=self.predict_yaw)
 
         # ============================== Mode Prob prediction (P(z|X_1:t)) ==============================
-        self.P = nn.Parameter(torch.Tensor(c, 1, 1, d_k), requires_grad=True)  # Appendix C.2.
+        self.P = nn.Parameter(torch.Tensor(c, 1, 1, d_k), requires_grad=True)  # Appendix C.2.  should be the same to vectors in the same c, vector_len = d_k
         nn.init.xavier_uniform_(self.P)
 
         if self.use_map_lanes:
@@ -167,12 +167,23 @@ class AutoBotJoint(nn.Module):
         return subsequent_mask
 
     def process_observations(self, ego, agents):
+        '''it looks like 
+            opps_tensor: 
+                with mask=1, for those unmeaningful agent timestamp vector.
+                with mask=0, for those meaningful agent and ego vectors.(?? weird)
+            return
+                (1) ego_tensor: [B, past_t+fut_t, k_attr], the ego vehicle tensor 
+                (2) opps_tensor: [B, T_obs, M-1, k_attr], the agents' vehicle tensor
+                (3) opps_masks: [B, T_obs, M], opposite mask of the agents' tensor(questionable)
+                (4) env_masks: [B, past_t+fut_t], the ego_tensor's mask. Also, perceive it as environment mask.
+        '''
         # ego stuff
         ego_tensor = ego[:, :, :self.k_attr]
         env_masks = ego[:, :, -1]
 
         # Agents stuff
         temp_masks = torch.cat((torch.ones_like(env_masks.unsqueeze(-1)), agents[:, :, :, -1]), dim=-1)
+            # cat([B, T_obs, 1], [B, T_obs, M-1])-> [B, T_obs, M]
         opps_masks = (1.0 - temp_masks).type(torch.BoolTensor).to(agents.device)  # only for agents.
         opps_tensor = agents[:, :, :, :self.k_attr]  # only opponent states
 
@@ -187,9 +198,12 @@ class AutoBotJoint(nn.Module):
         T_obs = agents_emb.size(0)
         B = agent_masks.size(0)
         agent_masks = agent_masks.permute(0, 2, 1).reshape(-1, T_obs)
-        agent_masks[:, -1][agent_masks.sum(-1) == T_obs] = False  # Ensure agent's that don't exist don't throw NaNs.
+            # (B, T, N)-> (B*N, T)
+            # agent_masks: (B*N, T)
+        agent_masks[:, -1][agent_masks.sum(-1) == T_obs] = False  # Ensure agent's that don't exist don't throw NaNs.   (questionable by Jasper)
         agents_temp_emb = layer(self.pos_encoder(agents_emb.reshape(T_obs, B * (self._M + 1), -1)),
-                                src_key_padding_mask=agent_masks)
+                                src_key_padding_mask=agent_masks) # input becomes: [T,B*N,H]
+
         return agents_temp_emb.view(T_obs, B, self._M+1, -1)
 
     def social_attn_fn(self, agents_emb, agent_masks, layer):
@@ -254,13 +268,33 @@ class AutoBotJoint(nn.Module):
 
         # Encode all input observations
         ego_tensor, _agents_tensor, opps_masks, env_masks = self.process_observations(ego_in, agents_in)
-        agents_tensor = torch.cat((ego_tensor.unsqueeze(2), _agents_tensor), dim=2)
-        agents_emb = self.agents_dynamic_encoder(agents_tensor).permute(1, 0, 2, 3)
+            # ego_tensor: [B, T_obs, k_attr],
+            # env_masks: [B, T_obs], the ego_in's mask
+            # opps_masks: [B, T_obs, M], used as a src_key_padding_mask in the transformer model, True for those need to be ignored.
+            # _agents_tensor: without concate with ego tensor
+            # opps_masks : False-> not meaningful, True: not meaningful
+                #     tensor([[[False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True]],
 
+                # [[False,  True,  True,  ...,  True,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True]],
+
+                # [[False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True],
+                #  [False, False, False,  ..., False,  True,  True]],
+        agents_tensor = torch.cat((ego_tensor.unsqueeze(2), _agents_tensor), dim=2)
+            # agents_tensor: [B, T_obs, M, k_attr], including ego_tensor
+        agents_emb = self.agents_dynamic_encoder(agents_tensor).permute(1, 0, 2, 3)
+            # agents_emb: [T_obs, B, M, d_k]
         # Process through AutoBot's encoder
         for i in range(self.L_enc):
-            agents_emb = self.temporal_attn_fn(agents_emb, opps_masks, layer=self.temporal_attn_layers[i])
-            agents_emb = self.social_attn_fn(agents_emb, opps_masks, layer=self.social_attn_layers[i])
+            agents_emb = self.temporal_attn_fn(agents_emb, opps_masks, layer=self.temporal_attn_layers[i])# output: [T,B,N,H]
+            agents_emb = self.social_attn_fn(agents_emb, opps_masks, layer=self.social_attn_layers[i]) # output: [T, B, N, H]
 
         # Process map information
         if self.use_map_lanes:
@@ -269,9 +303,9 @@ class AutoBotJoint(nn.Module):
             road_segs_masks = orig_road_segs_masks.unsqueeze(2).repeat(1, self.c, 1, 1).view(B * self.c * (self._M+1), -1)
 
         # Repeat the tensors for the number of modes.
-        opps_masks_modes = opps_masks.unsqueeze(1).repeat(1, self.c, 1, 1).view(B*self.c, ego_in.shape[1], -1)
-        context = agents_emb.unsqueeze(2).repeat(1, 1, self.c, 1, 1)
-        context = context.view(ego_in.shape[1], B*self.c, self._M+1, self.d_k)
+        opps_masks_modes = opps_masks.unsqueeze(1).repeat(1, self.c, 1, 1).view(B*self.c, ego_in.shape[1], -1)# [B*c, T_obs, M]
+        context = agents_emb.unsqueeze(2).repeat(1, 1, self.c, 1, 1)# [T_obs, B, c, M, d_k]
+        context = context.view(ego_in.shape[1], B*self.c, self._M+1, self.d_k)# [T_obs, B*c, M, d_k]
 
         # embed agent types
         agent_types_features = self.emb_agent_types(agent_types).unsqueeze(1).\
@@ -285,6 +319,7 @@ class AutoBotJoint(nn.Module):
         agents_dec_emb = dec_parameters
 
         for d in range(self.L_dec):
+            ## use attention between map_feature and agent_feature, output map_features(att). At the end, add  map_features(att) to agent_feature.
             if self.use_map_lanes and d == 1:
                 agents_dec_emb = agents_dec_emb.reshape(self.T, -1, self.d_k)
                 agents_dec_emb_map = self.map_attn_layers(query=agents_dec_emb, key=map_features, value=map_features,
@@ -293,15 +328,15 @@ class AutoBotJoint(nn.Module):
                 agents_dec_emb = agents_dec_emb.reshape(self.T, B*self.c, self._M+1, -1)
 
             agents_dec_emb = self.temporal_attn_decoder_fn(agents_dec_emb, context, opps_masks_modes, layer=self.temporal_attn_decoder_layers[d])
-            agents_dec_emb = self.social_attn_decoder_fn(agents_dec_emb, opps_masks_modes, layer=self.social_attn_decoder_layers[d])
-
-        out_dists = self.output_model(agents_dec_emb.reshape(self.T, -1, self.d_k))
-        out_dists = out_dists.reshape(self.T, B, self.c, self._M+1, -1).permute(2, 0, 1, 3, 4)
+            agents_dec_emb = self.social_attn_decoder_fn(agents_dec_emb, opps_masks_modes, layer=self.social_attn_decoder_layers[d])# output: [T, B*c, N, H]
+        
+        out_dists = self.output_model(agents_dec_emb.reshape(self.T, -1, self.d_k))# input: [T, B*c*N, H], output: [T, B*c*N, 5] 5:(x,y,vx,vy,rho)
+        out_dists = out_dists.reshape(self.T, B, self.c, self._M+1, -1).permute(2, 0, 1, 3, 4) #[c,T, B, N, 5]
 
         # Mode prediction
-        mode_params_emb = self.P.repeat(1, B, self._M+1, 1).view(self.c, -1, self.d_k)
+        mode_params_emb = self.P.repeat(1, B, self._M+1, 1).view(self.c, -1, self.d_k)# [c, B*M, d_k]
         mode_params_emb = self.prob_decoder(query=mode_params_emb, key=agents_emb.reshape(-1, B*(self._M+1), self.d_k),
-                                            value=agents_emb.reshape(-1, B*(self._M+1), self.d_k))[0]
+                                            value=agents_emb.reshape(-1, B*(self._M+1), self.d_k))[0]# a multi-head attention, q:mode k:agent_emb v:agent_emb
         if self.use_map_lanes:
             orig_map_features = orig_map_features.view(-1, B*(self._M+1), self.d_k)
             orig_road_segs_masks = orig_road_segs_masks.view(B*(self._M+1), -1)

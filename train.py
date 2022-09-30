@@ -308,7 +308,7 @@ class Trainer:
                 # agents_out: torch.Size([batch, 12, 7, 5])
                 # map_lanes: torch.Size([batch, 8, 100, 40, 4]
                 pred_obs, mode_probs = self.autobot_model(ego_in, agents_in, map_lanes, agent_types) ## forward of the model (by Jasper)
-                
+                    # pred_obs: [c, T, B, M, 5],  mode_probs: [B, c]
                 ## compute loss
                 nll_loss, kl_loss, post_entropy, adefde_loss = \
                     nll_loss_multimodes_joint(pred_obs, ego_out, agents_out, mode_probs,

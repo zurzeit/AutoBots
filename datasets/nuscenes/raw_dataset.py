@@ -207,10 +207,12 @@ class NuScenesDataset(Dataset):
         '''pick the top num_others closest object as the agents
             The agent array only contains those agents' information.
             The mask will be 1 for those meaningful agents-timestamp info. 
-            Because not all agents appear in the scene for past_t+fut_t time, there will be some
-            0 store in the agents_array[agents, past_t+fut_t, 3](by Jasper)
+            Because not all agents appear in the scene during the whole (past_t+fut_t) time interval, 
+            there will be some 0 store in the agents_array[agents, past_t+fut_t, 3](by Jasper)
             output:
-                agents_array: [num_others, fut_t+past_t, 3]
+                (1) agents_array: [num_others, fut_t+past_t, 3], the meaningful element always start from index 0. 
+                                    Because not all the agents has the same length of hist traj, there is no alignment of the timestamps
+                                    between different agents_array.
                 agents_types_list: list, len=num_others
         '''
         # Rectangle around ego at the prediction time
@@ -226,6 +228,9 @@ class NuScenesDataset(Dataset):
             info = self._helper.get_sample_annotation(key, sample_token)
             agent_type = info['category_name']
             useful_agent_bool = "vehicle" in agent_type or "human" in agent_type
+            # compare if 
+            #   (1) the sample's position is in a certain range of the ego vehicle.
+            #   (2) the object type is correct
             if x_left <= value[0, 0] <= x_right and y_behind <= value[0, 1] <= y_infront and \
                     key in future_samples.keys() and useful_agent_bool:
                 dist_to_ego_at_t = distance(value[0], [0,0])
@@ -258,7 +263,7 @@ class NuScenesDataset(Dataset):
         ''' 
 
         Because this is a transformer-based model, the input tensor format is different from what we know.
-        We want to produce somekind of timestamp-centered tensor. It means we need past tensor, future tensor 
+        We want to produce somekind of timestamp-center tensor. It means we need past tensor, future tensor 
         all combine in one item[idx]. Hence, each item[idx] is not an agent's whole traj info
          but "trajectory among a sliding window of the agent". As a result, the item[next_idx] will be a timestamp-shift
          tensor of the item[idx].
@@ -308,8 +313,10 @@ class NuScenesDataset(Dataset):
             sample_token, seconds=self.past_secs, in_agent_frame=False, just_xy=True
         )
             # p_sample_info: class < dict >, keys are the instance in the scene
-            # If just_xy== True, the mapping is from instance token to np.ndarray
-            # Else, the mapping is from instance token to list of records
+            # If just_xy== True, 
+                # value: the mapping is from instance token to np.ndarray
+            # Else, 
+                # value: the mapping is from instance token to list of records
         f_sample_info = self._helper.get_future_for_sample(
             sample_token, seconds=self.future_secs, in_agent_frame=False, just_xy=True
         )

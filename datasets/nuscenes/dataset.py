@@ -52,20 +52,31 @@ class NuscenesH5Dataset(Dataset):
         self.num_agent_types = len(self.unique_agent_types)
 
     def get_input_output_seqs(self, ego_data, agents_data):
-        '''
+        ''' split the whole trajectory into future and past data. 
+            Also, make sure the input_len match the challenge requirement.
+        input:
+            ego_data: [18,3], 18:(past_t+fut_t)   3:(x,y,mask)
+            agents_data: [18, 7, 3]   18:(past_t+fut_t)  7:num_others  3:(x,y,mask)
+        
+        output
             ego_in: [4, 3]
             ego_out: [the last pred_horizon of ego,3] (12,3)
             agents_in: [4, num_others, 3]
             agents_out: [the last pred_horizon of ego, num_others, 3]
 
         '''
+        
         traj_len = int(np.sum(ego_data[:, 2])) # the ego time interval. smaller then 18 (past_t+fut_t)
 
         # Ego
+        # I think they want to divide data from 18 frames into 6(past) and 12(future). Although the ego_data
+        # is (18,3), we can't guarantee the whole 18 frames are meaningful(some frames with mask=0). Hence,
+        # we calculate the traj_len to ensure the first traj_len frames are meaningful.
         temp_ego_in = ego_data[:traj_len - self.pred_horizon]  # at most shape(6, 3)
-        ego_out = ego_data[traj_len - self.pred_horizon:traj_len]  # guaranteed to be shape(horizon, 3)
+        ego_out = ego_data[traj_len - self.pred_horizon:traj_len]  # pick the last (self.pred_horizon) frames
         ego_in = np.zeros((6, 3))
-        ego_in[-len(temp_ego_in):] = temp_ego_in
+        ego_in[-len(temp_ego_in):] = temp_ego_in # for len(temp_ego_in)!=6, there will be some 0 in ego_in's first
+        # several timestamps. 
 
         # separate agents into in/out.
         temp_agents_in = agents_data[:traj_len - self.pred_horizon]  # at most shape(6, 3)
@@ -207,6 +218,13 @@ class NuscenesH5Dataset(Dataset):
         return roads
 
     def rotate_agent_datas(self, ego_in, ego_out, agents_in, agents_out, roads):
+        ''' 
+        input vector has length 3:
+            (global_x, global_y,mask)
+        output vector has length 5:
+            new_ego: (rotated_x, rotated_y, global_x, global_y, mask)
+            new_agent: (rotated_x, rotated_y, global_x, global_y, mask)
+        the data will be 5 elements'''
         new_ego_in = np.zeros((len(ego_in), ego_in.shape[1]+2))
         new_ego_out = np.zeros((len(ego_out), ego_out.shape[1] + 2))
         new_agents_in = np.zeros((len(agents_in), self.num_others, agents_in.shape[2]+2))
@@ -224,7 +242,7 @@ class NuscenesH5Dataset(Dataset):
             new_agents_out[:, n, 2:] = agents_out[:, n]
             if agents_in[:, n, -1].sum() >= 2:
                 # then we can use the past to compute the angle to +y-axis
-                diff = agents_in[-1, n, :2] - agents_in[-2, n, :2]
+                diff = agents_in[-1, n, :2] - agents_in[-2, n, :2]# the displacement of the last past trajectories.
                 yaw = np.arctan2(diff[1], diff[0])
                 angle_of_rotation = (np.pi / 2) + np.sign(-yaw) * np.abs(yaw)
                 translation = agents_in[-1, n, :2]
@@ -254,9 +272,9 @@ class NuscenesH5Dataset(Dataset):
     def __getitem__(self, idx: int):
         '''
         output
-            in_ego: [4(input length for challenge), 3]
-            out_ego: [the last pred_horizon of ego,3] (12,3)
-            in_agents: [4, num_others, 3]
+            in_ego: [4(input length for challenge), 5] 5: (rotated_x, rotated_y, global_x, global_y, mask)
+            out_ego: [the last pred_horizon of ego, 5] (12,5)
+            in_agents: [4, num_others, 5]
             out_agents: [the last pred_horizon of ego, num_others, 3] (12,3)
         '''
         dataset = h5py.File(os.path.join(self.data_root, self.split_name + '_dataset.hdf5'), 'r')
@@ -268,10 +286,11 @@ class NuscenesH5Dataset(Dataset):
         agents_data, agent_types = self.select_valid_others(agents_data, agent_types)
 
         in_ego, out_ego, in_agents, out_agents = self.get_input_output_seqs(ego_data, agents_data)
-            # in_ego: [4, 3]
+            # in_ego: [4, 3] 4: input_len  3:(x,y,mask)
             # out_ego: [the last pred_horizon of ego,3] (12,3)
             # in_agents: [4, num_others, 3]
-            # out_agents: [the last pred_horizon of ego, num_others, 3] (12,3)
+            # out_agents: [the last pred_horizon of ego, num_others, 3] (12, num_others, 3)
+        print()
         if self.use_map_img:
             # original image is 75m behind, 75m in front, 75m left, 75m right @ 0.2m/px resolution.
             # below recovers an image with 0m behind, 75m in front, 30m left, 30m right
@@ -289,7 +308,7 @@ class NuscenesH5Dataset(Dataset):
         if self.use_joint_version:
             in_ego, out_ego, in_agents, out_agents, roads = \
                 self.rotate_agent_datas(in_ego, out_ego, in_agents, out_agents, roads)
-
+        # ego or agent vectors become length = 5 ->(rotated_x, rotated_y, global_x, global_y, mask)
         city_name = dataset['scene_ids'][idx][-1].decode('utf-8')
         if "train" in self.split_name:
             should_we_mirror = np.random.choice([0, 1])
