@@ -125,18 +125,31 @@ def get_BVG_distributions_joint(pred):
 
 
 def get_Laplace_dist_joint(pred):
+    '''
+        pred[:, :, :, :2]: is x_mean,y_mean
+        pred[:, :, :, 2:4]: are x_sigma, y_sigma
+    '''
+
     return Laplace(pred[:, :, :, :2], pred[:, :, :, 2:4])
 
 
 def nll_pytorch_dist_joint(pred, data, agents_masks):
     # biv_gauss_dist = get_BVG_distributions_joint(pred)
     '''
-        pred: [B, T, num_others, 5]
-        data: [B, T, num_others, 2] (gt)
+        pred: [B, T, num_others, 5] 5: (x_mean, y_mean, x_vari, y_vari, rho)
+        data: [B, T, num_others, 2] (gt)  2: (rotated_x, rotated_y)
     '''
+
     biv_gauss_dist = get_Laplace_dist_joint(pred)
     num_active_agents_per_timestep = agents_masks.sum(2)
-    loss = (((-biv_gauss_dist.log_prob(data).sum(-1) * agents_masks).sum(2)) / num_active_agents_per_timestep).sum(1)
+    loss = (((-biv_gauss_dist.log_prob(data).sum(-1) * agents_masks).sum(2)) / num_active_agents_per_timestep).sum(1)# put in gt(x,y) to calculate the laplace
+    # the benefit of Laplace is the abs value |x-x_mean|. Hence, it is convenient when we do the calculation
+    # according to the Laplace.log_prob
+    # def log_prob(self, value):
+        # if self._validate_args:
+        #     self._validate_sample(value)
+        # return -torch.log(2 * self.scale) - torch.abs(value - self.loc) / self.scale
+    # it is just doing abs(gt_x - pred_x) / pred_x_vari
     return loss
 
 
@@ -148,9 +161,9 @@ def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_w
     # T: output sequence length (by Jasper)
     
     Args:
-      pred: [c, T, B, M, 5] 
-      ego_data: [B, T, 5]
-      agents_data: [B, T, M, 5]
+      pred: [c, T, B, M, 5] 5: [x_mean, y_mean, x_sigma, y_sigma, rho]
+      ego_data: [B, T, 5] 
+      agents_data: [B, T, M, 5] 5: [rotated_x, rotated_y, global_x, global_y, mask]
       mode_probs: [B, c], prior prob over modes
     """
     gt_agents = torch.cat((ego_data.unsqueeze(2), agents_data), dim=2)
@@ -164,14 +177,17 @@ def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_w
         for kk in range(modes):# calculate all modes of nll
             nll = nll_pytorch_dist_joint(pred[kk].transpose(0, 1), gt_agents[:, :, :, :2], agents_masks)
             log_lik[:, kk] = -nll.cpu().numpy()
-
-    priors = mode_probs.detach().cpu().numpy()
-    log_posterior_unnorm = log_lik + np.log(priors)
+    ########################################################################################### This part is hard. (Jasper)
+    priors = mode_probs.detach().cpu().numpy()#P(Z|X_past): produce by the self.P and the predictor
+    log_posterior_unnorm = log_lik + np.log(priors) 
+        # log_lik: Assume pred is correct, then what is the probability that the ground truth data happened based on the pred 
+        # log_posterior_unnorm: sum of the log_lik and the priors
     log_posterior = log_posterior_unnorm - special.logsumexp(log_posterior_unnorm, axis=1).reshape((batch_sz, 1))
+        # the marginal likelihood P(E)=sum over H of P(E|H)(??)
     post_pr = np.exp(log_posterior)
     post_pr = torch.tensor(post_pr).float().to(gt_agents.device)
     post_entropy = torch.mean(D.Categorical(post_pr).entropy()).item()
-
+    ##########################################################################################################################3
     # Compute loss.
     loss = 0.0
     for kk in range(modes):
@@ -184,11 +200,11 @@ def nll_loss_multimodes_joint(pred, ego_data, agents_data, mode_probs, entropy_w
         entropy_vals.append(get_BVG_distributions_joint(pred[kk]).entropy())
     entropy_loss = torch.mean(torch.stack(entropy_vals).permute(2, 0, 3, 1).sum(3).mean(2).max(1)[0])
     loss += entropy_weight * entropy_loss
-
+    
     # KL divergence between the prior and the posterior distributions.(D_KL terms in the paper. by Jasper)
     kl_loss_fn = torch.nn.KLDivLoss(reduction='batchmean')  # type: ignore
     kl_loss = kl_weight*kl_loss_fn(torch.log(mode_probs), post_pr)
-
+        # mode_probs: q(Z),  post_pr: P_theta(Z|Y,X_past)
     # compute ADE/FDE loss - L2 norms with between best predictions and GT.
     if use_FDEADE_aux_loss:
         adefde_loss = l2_loss_fde_joint(pred, gt_agents, agents_masks, agent_types, predict_yaw)
