@@ -7,6 +7,8 @@ pyproj==3.2.1
 pyquaternion==0.9.9
 scikit_learn==1.0.2
 scipy==1.7.1
-torch==1.9.0
-torchvision==0.10.0
+#torch==1.9.0
+#torchvision==0.10.0
 trajnetplusplustools==0.3.0
+# replace to conda install pytorch==1.11.0 torchvision==0.12.0 torchaudio==0.11.0 cudatoolkit=11.3 -c pytorch
+# pip install tensorboard
